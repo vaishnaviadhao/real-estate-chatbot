@@ -4,7 +4,9 @@ Features:
 - Dual-script BM25 tokenization with site-aware query boosting and balanced top-6 retrieval
 - Graceful response when no context matches (zero model calls with empty context)
 - OpenRouter multi-model fallback on 404, 429, and 5xx errors
-- /health reporting chunks per site, models, and key status
+- Strict header formatting and quote/whitespace stripping for OPENROUTER_API_KEY
+- follow_redirects disabled to prevent stripping of Authorization header
+- /health reporting chunks per site, models, key status, key length, and key prefix
 - /reload protected by ADMIN_TOKEN
 - Background scraper launch if docs.jsonl has fewer than 100 chunks
 """
@@ -20,7 +22,6 @@ from rank_bm25 import BM25Okapi
 
 DOCS_FILE = Path(os.getenv("DATA_FILE", "data/docs.jsonl"))
 SEED_FILE = Path(os.getenv("SEED_FILE", "data/seed.jsonl"))
-KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip()
 
 DEFAULT_MODELS = (
@@ -43,6 +44,16 @@ DOCS: list[dict] = []
 BM: Optional[BM25Okapi] = None
 CHUNKS_PER_SITE: dict[str, int] = {"DarGlobal": 0, "Wasalt": 0}
 LOCK = threading.Lock()
+
+def get_openrouter_api_key() -> str:
+    """Read OPENROUTER_API_KEY dynamically, stripping whitespace, newlines, and quotes."""
+    raw = os.getenv("OPENROUTER_API_KEY", "")
+    if not raw:
+        return ""
+    cleaned = raw.strip()
+    while (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
 
 def tok(s: str) -> list[str]:
     # Match alphanumeric words in Latin and Arabic scripts
@@ -154,7 +165,6 @@ def retrieve(query: str, k: int = 6) -> list[dict]:
     site_filter = detect_site_filter(query)
 
     if site_filter == "DarGlobal":
-        # Boost DarGlobal chunks
         boosted = []
         for i, doc in enumerate(DOCS):
             s = scores[i]
@@ -165,7 +175,6 @@ def retrieve(query: str, k: int = 6) -> list[dict]:
         return [doc for doc, _ in boosted[:k]]
 
     elif site_filter == "Wasalt":
-        # Boost Wasalt chunks
         boosted = []
         for i, doc in enumerate(DOCS):
             s = scores[i]
@@ -176,7 +185,6 @@ def retrieve(query: str, k: int = 6) -> list[dict]:
         return [doc for doc, _ in boosted[:k]]
 
     else:
-        # Balanced retrieval across both sites
         dar_hits = []
         wasalt_hits = []
         other_hits = []
@@ -195,10 +203,8 @@ def retrieve(query: str, k: int = 6) -> list[dict]:
         dar_hits.sort(key=lambda x: x[1], reverse=True)
         wasalt_hits.sort(key=lambda x: x[1], reverse=True)
 
-        # Allocate top 3 from each
         selected = [doc for doc, _ in dar_hits[:3]] + [doc for doc, _ in wasalt_hits[:3]]
 
-        # If less than k (6), fill from the remainder of either site or other
         if len(selected) < k:
             remaining = [doc for doc, _ in dar_hits[3:]] + [doc for doc, _ in wasalt_hits[3:]] + [doc for doc, _ in other_hits]
             remaining.sort(key=lambda doc: scores[DOCS.index(doc)], reverse=True)
@@ -212,12 +218,15 @@ def retrieve(query: str, k: int = 6) -> list[dict]:
 
 @app.get("/health")
 def health():
+    key = get_openrouter_api_key()
     return {
         "ok": True,
         "chunks_per_site": CHUNKS_PER_SITE,
         "total_chunks": len(DOCS),
         "models": MODELS,
-        "has_api_key": bool(KEY),
+        "has_api_key": bool(key),
+        "key_length": len(key),
+        "key_prefix": key[:8] if key else "",
     }
 
 @app.post("/reload")
@@ -263,8 +272,9 @@ async def chat(r: Req):
         }
 
     sources = sorted({h["url"] for h in hits if h.get("url")})
+    key = get_openrouter_api_key()
 
-    if not KEY:
+    if not key:
         preview = (
             f"[Search Mode - OPENROUTER_API_KEY not set]\n\n"
             f"Found {len(hits)} relevant source chunks across database:\n\n"
@@ -283,14 +293,14 @@ async def chat(r: Req):
     msgs.append({"role": "user", "content": r.message})
 
     headers = {
-        "Authorization": f"Bearer {KEY}",
-        "HTTP-Referer": "https://github.com/vaishnaviadhao/real-estate-chatbot",
-        "X-Title": "DarGlobal and Wasalt Real Estate Chatbot",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://real-estate-chatbot-5gwn.onrender.com",
+        "X-Title": "DarGlobal Wasalt Assistant",
     }
 
     last_error = None
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
         for model in MODELS:
             try:
                 resp = await client.post(
@@ -308,19 +318,19 @@ async def chat(r: Req):
                     return {"answer": ans, "model": model, "sources": sources}
 
                 status = resp.status_code
-                detail = resp.text[:250]
-                last_error = f"{model}: HTTP {status} - {detail}"
+                body = resp.text
+                last_error = f"{model}: HTTP {status} - {body}"
 
                 # Try next model on 404, 429, or 5xx
                 if status in (404, 429) or 500 <= status < 600:
                     print(f"[Model Fallback] {model} returned {status}, trying next model...")
                     continue
                 else:
-                    # Non-retriable error
+                    # Non-retriable error (e.g., 400, 401, 403) - stop and return error
                     break
             except Exception as e:
                 last_error = f"{model}: {e}"
                 print(f"[Model Fallback] {model} raised exception: {e}, trying next model...")
                 continue
 
-    raise HTTPException(status_code=502, detail=f"OpenRouter models failed. Last error: {last_error}")
+    raise HTTPException(status_code=502, detail=f"OpenRouter error: {last_error}")
