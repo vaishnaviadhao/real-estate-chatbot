@@ -1,37 +1,128 @@
-import json, os, re, subprocess, sys
+"""FastAPI AI Assistant for DarGlobal and Wasalt Real Estate.
+Features:
+- Merges data/docs.jsonl and data/seed.jsonl at startup and on reload
+- Dual-script BM25 tokenization with site-aware query boosting and balanced top-6 retrieval
+- Graceful response when no context matches (zero model calls with empty context)
+- OpenRouter multi-model fallback on 404, 429, and 5xx errors
+- /health reporting chunks per site, models, and key status
+- /reload protected by ADMIN_TOKEN
+- Background scraper launch if docs.jsonl has fewer than 100 chunks
+"""
+import asyncio, json, os, re, subprocess, sys, threading
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 
-DATA = Path(os.getenv("DATA_FILE", "data/docs.jsonl"))
-KEY = os.getenv("OPENROUTER_API_KEY", "")
-MODELS = [m.strip() for m in os.getenv(
-    "OPENROUTER_MODELS",
-    "meta-llama/llama-3.3-70b-instruct:free,google/gemini-2.0-flash-exp:free,qwen/qwen-2.5-72b-instruct:free,mistralai/mistral-small-24b-instruct-2501:free,google/gemma-3-27b-it:free",
-).split(",") if m.strip()]
+DOCS_FILE = Path(os.getenv("DATA_FILE", "data/docs.jsonl"))
+SEED_FILE = Path(os.getenv("SEED_FILE", "data/seed.jsonl"))
+KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip()
 
-SYSTEM = (
-    "You are an expert real estate AI assistant specialized in DarGlobal and Wasalt.\n"
-    "Answer the user's question accurately using ONLY the retrieved context below.\n"
-    "If the answer is not present in the context, state politely that you do not have that specific information.\n"
-    "Be concise, informative, and specify whether you are referring to DarGlobal or Wasalt."
+DEFAULT_MODELS = (
+    "meta-llama/llama-3.3-70b-instruct:free,"
+    "google/gemini-2.0-flash-exp:free,"
+    "qwen/qwen-2.5-72b-instruct:free,"
+    "mistralai/mistral-small-24b-instruct-2501:free,"
+    "google/gemma-3-27b-it:free"
 )
+MODELS = [m.strip() for m in os.getenv("OPENROUTER_MODELS", DEFAULT_MODELS).split(",") if m.strip()]
+
+SYSTEM_PROMPT = (
+    "You are an expert real estate AI assistant for DarGlobal and Wasalt.\n"
+    "Answer questions factually and concisely using ONLY the provided context.\n"
+    "Explicitly mention whether you are referring to DarGlobal or Wasalt.\n"
+    "If the context does not contain enough information, state that you do not have that specific information."
+)
+
+DOCS: list[dict] = []
+BM: Optional[BM25Okapi] = None
+CHUNKS_PER_SITE: dict[str, int] = {"DarGlobal": 0, "Wasalt": 0}
+LOCK = threading.Lock()
 
 def tok(s: str) -> list[str]:
     # Match alphanumeric words in Latin and Arabic scripts
     return re.findall(r"[\w\u0600-\u06FF]+", s.lower())
 
-if not DATA.exists() or DATA.stat().st_size == 0:
-    print(f"Data file {DATA} missing or empty. Running scraper...")
-    subprocess.run([sys.executable, "-m", "scraper.scrape"], check=False)
+def load_and_merge_docs() -> tuple[list[dict], dict[str, int]]:
+    combined = []
+    seen = set()
 
-DOCS = [json.loads(line) for line in DATA.open(encoding="utf-8")] if DATA.exists() and DATA.stat().st_size > 0 else []
-BM = BM25Okapi([tok(d["title"] + " " + d["text"]) for d in DOCS]) if DOCS else None
+    for file_path in [DOCS_FILE, SEED_FILE]:
+        if file_path.exists() and file_path.stat().st_size > 0:
+            try:
+                with file_path.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                            # Deduplicate by URL and beginning of text
+                            key = (d.get("url", ""), d.get("text", "")[:100].strip())
+                            if key not in seen:
+                                seen.add(key)
+                                combined.append(d)
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
 
-app = FastAPI(title="DarGlobal & Wasalt Real Estate Assistant")
+    counts = {"DarGlobal": 0, "Wasalt": 0}
+    for d in combined:
+        site = d.get("site", "Other")
+        counts[site] = counts.get(site, 0) + 1
+
+    return combined, counts
+
+def reload_data_index():
+    global DOCS, BM, CHUNKS_PER_SITE
+    with LOCK:
+        DOCS, CHUNKS_PER_SITE = load_and_merge_docs()
+        if DOCS:
+            tokenized_corpus = [tok(d.get("title", "") + " " + d.get("text", "")) for d in DOCS]
+            BM = BM25Okapi(tokenized_corpus)
+        else:
+            BM = None
+        print(f"[Index] Loaded {len(DOCS)} merged chunks: {CHUNKS_PER_SITE}")
+
+# Initial load
+reload_data_index()
+
+def run_background_scrape_if_needed():
+    docs_count = 0
+    if DOCS_FILE.exists():
+        try:
+            with DOCS_FILE.open("r", encoding="utf-8") as f:
+                docs_count = sum(1 for line in f if line.strip())
+        except Exception:
+            docs_count = 0
+
+    if docs_count < 100:
+        print(f"[Startup] docs.jsonl has {docs_count} chunks (< 100). Starting background scraper...")
+        def _scrape_job():
+            try:
+                proc = subprocess.run([sys.executable, "-m", "scraper.scrape"], check=False)
+                print(f"[Startup Background Scraper] Exited with code {proc.returncode}")
+                reload_data_index()
+            except Exception as e:
+                print(f"[Startup Background Scraper] Error: {e}")
+
+        t = threading.Thread(target=_scrape_job, daemon=True)
+        t.start()
+    else:
+        print(f"[Startup] docs.jsonl already has {docs_count} chunks (>= 100). No startup scrape needed.")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    run_background_scrape_if_needed()
+    yield
+
+app = FastAPI(title="DarGlobal and Wasalt Real Estate Assistant", lifespan=lifespan)
 
 class Msg(BaseModel):
     role: str
@@ -41,23 +132,118 @@ class Req(BaseModel):
     message: str
     history: list[Msg] = []
 
-def retrieve(query: str, k: int = 5):
-    if not BM or not DOCS:
-        return []
-    tokens = tok(query)
-    if not tokens:
-        return []
-    scores = BM.get_scores(tokens)
-    top_indices = sorted(range(len(DOCS)), key=lambda i: scores[i], reverse=True)[:k]
-    return [DOCS[i] for i in top_indices if scores[i] > 0]
+def detect_site_filter(q: str) -> str:
+    q_lower = q.lower()
+    has_dar = bool(re.search(r"\b(darglobal|dar\s*global)\b", q_lower))
+    has_wasalt = bool(re.search(r"\b(wasalt|waslat|وصلت)\b", q_lower))
+    if has_dar and not has_wasalt:
+        return "DarGlobal"
+    if has_wasalt and not has_dar:
+        return "Wasalt"
+    return "both"
+
+def retrieve(query: str, k: int = 6) -> list[dict]:
+    with LOCK:
+        if not BM or not DOCS:
+            return []
+        tokens = tok(query)
+        if not tokens:
+            return []
+        scores = BM.get_scores(tokens)
+
+    site_filter = detect_site_filter(query)
+
+    if site_filter == "DarGlobal":
+        # Boost DarGlobal chunks
+        boosted = []
+        for i, doc in enumerate(DOCS):
+            s = scores[i]
+            if s > 0:
+                boost = 1.6 if doc.get("site") == "DarGlobal" else 0.8
+                boosted.append((doc, s * boost))
+        boosted.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, _ in boosted[:k]]
+
+    elif site_filter == "Wasalt":
+        # Boost Wasalt chunks
+        boosted = []
+        for i, doc in enumerate(DOCS):
+            s = scores[i]
+            if s > 0:
+                boost = 1.6 if doc.get("site") == "Wasalt" else 0.8
+                boosted.append((doc, s * boost))
+        boosted.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, _ in boosted[:k]]
+
+    else:
+        # Balanced retrieval across both sites
+        dar_hits = []
+        wasalt_hits = []
+        other_hits = []
+
+        for i, doc in enumerate(DOCS):
+            s = scores[i]
+            if s > 0:
+                site = doc.get("site")
+                if site == "DarGlobal":
+                    dar_hits.append((doc, s))
+                elif site == "Wasalt":
+                    wasalt_hits.append((doc, s))
+                else:
+                    other_hits.append((doc, s))
+
+        dar_hits.sort(key=lambda x: x[1], reverse=True)
+        wasalt_hits.sort(key=lambda x: x[1], reverse=True)
+
+        # Allocate top 3 from each
+        selected = [doc for doc, _ in dar_hits[:3]] + [doc for doc, _ in wasalt_hits[:3]]
+
+        # If less than k (6), fill from the remainder of either site or other
+        if len(selected) < k:
+            remaining = [doc for doc, _ in dar_hits[3:]] + [doc for doc, _ in wasalt_hits[3:]] + [doc for doc, _ in other_hits]
+            remaining.sort(key=lambda doc: scores[DOCS.index(doc)], reverse=True)
+            for doc in remaining:
+                if doc not in selected:
+                    selected.append(doc)
+                if len(selected) >= k:
+                    break
+
+        return selected
 
 @app.get("/health")
 def health():
     return {
         "ok": True,
-        "chunks": len(DOCS),
+        "chunks_per_site": CHUNKS_PER_SITE,
+        "total_chunks": len(DOCS),
         "models": MODELS,
         "has_api_key": bool(KEY),
+    }
+
+@app.post("/reload")
+def reload_index(
+    authorization: Optional[str] = Header(None),
+    x_admin_token: Optional[str] = Header(None),
+    token: Optional[str] = Query(None)
+):
+    if ADMIN_TOKEN:
+        provided = ""
+        if authorization and authorization.lower().startswith("bearer "):
+            provided = authorization[7:].strip()
+        elif x_admin_token:
+            provided = x_admin_token.strip()
+        elif token:
+            provided = token.strip()
+
+        if provided != ADMIN_TOKEN:
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid ADMIN_TOKEN")
+
+    reload_data_index()
+    return {
+        "ok": True,
+        "message": "Index reloaded successfully",
+        "chunks_per_site": CHUNKS_PER_SITE,
+        "total_chunks": len(DOCS),
     }
 
 @app.get("/")
@@ -66,42 +252,45 @@ def index():
 
 @app.post("/chat")
 async def chat(r: Req):
-    hits = retrieve(r.message)
-    sources = sorted({h["url"] for h in hits})
+    hits = retrieve(r.message, k=6)
+
+    # If no chunk scores above zero, answer that the info is not available without calling model
+    if not hits:
+        return {
+            "answer": "I do not have information available regarding that topic in the DarGlobal or Wasalt database.",
+            "model": "none",
+            "sources": [],
+        }
+
+    sources = sorted({h["url"] for h in hits if h.get("url")})
 
     if not KEY:
-        if hits:
-            preview = (
-                f"[Search Mode - OPENROUTER_API_KEY not configured]\n\n"
-                f"Retrieved {len(hits)} relevant source documents from the database:\n\n"
-                + "\n\n".join(f"• **{h['title']}** ({h['site']}):\n{h['text'][:350]}..." for h in hits[:3])
-                + "\n\nTo enable full AI generative synthesis, set your OPENROUTER_API_KEY environment variable."
-            )
-            return {"answer": preview, "model": "local-retrieval", "sources": sources}
-        else:
-            return {
-                "answer": (
-                    "No direct matching documents found in the database. "
-                    "Please set OPENROUTER_API_KEY to enable LLM generation."
-                ),
-                "model": "local-retrieval",
-                "sources": [],
-            }
+        preview = (
+            f"[Search Mode - OPENROUTER_API_KEY not set]\n\n"
+            f"Found {len(hits)} relevant source chunks across database:\n\n"
+            + "\n\n".join(f"• **{h['title']}** ({h['site']}):\n{h['text'][:300]}..." for h in hits[:3])
+            + "\n\nTo enable full AI generative synthesis, please configure OPENROUTER_API_KEY."
+        )
+        return {"answer": preview, "model": "local-search", "sources": sources}
 
-    ctx = "\n\n".join(f"[{h['site']}] {h['title']} ({h['url']}):\n{h['text']}" for h in hits) or "No relevant context found in database."
-    msgs = [{"role": "system", "content": f"{SYSTEM}\n\nContext:\n{ctx}"}]
+    context_str = "\n\n".join(
+        f"[{h.get('site', 'Unknown')}] {h.get('title', '')} ({h.get('url', '')}):\n{h.get('text', '')}"
+        for h in hits
+    )
+
+    msgs = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nContext:\n{context_str}"}]
     msgs += [m.model_dump() for m in r.history[-6:]]
     msgs.append({"role": "user", "content": r.message})
 
-    err = None
     headers = {
         "Authorization": f"Bearer {KEY}",
-        "HTTP-Referer": "https://github.com/vaishnavi/re-chatbot",
-        "X-Title": "DarGlobal and Wasalt Real Estate Assistant",
+        "HTTP-Referer": "https://github.com/vaishnaviadhao/real-estate-chatbot",
+        "X-Title": "DarGlobal and Wasalt Real Estate Chatbot",
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    last_error = None
+    async with httpx.AsyncClient(timeout=60.0) as client:
         for model in MODELS:
             try:
                 resp = await client.post(
@@ -117,8 +306,21 @@ async def chat(r: Req):
                     data = resp.json()
                     ans = data["choices"][0]["message"]["content"]
                     return {"answer": ans, "model": model, "sources": sources}
-                err = f"{model}: HTTP {resp.status_code} - {resp.text[:200]}"
-            except Exception as e:
-                err = f"{model}: {e}"
 
-    raise HTTPException(status_code=502, detail=f"OpenRouter models failed: {err}")
+                status = resp.status_code
+                detail = resp.text[:250]
+                last_error = f"{model}: HTTP {status} - {detail}"
+
+                # Try next model on 404, 429, or 5xx
+                if status in (404, 429) or 500 <= status < 600:
+                    print(f"[Model Fallback] {model} returned {status}, trying next model...")
+                    continue
+                else:
+                    # Non-retriable error
+                    break
+            except Exception as e:
+                last_error = f"{model}: {e}"
+                print(f"[Model Fallback] {model} raised exception: {e}, trying next model...")
+                continue
+
+    raise HTTPException(status_code=502, detail=f"OpenRouter models failed. Last error: {last_error}")
