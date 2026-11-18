@@ -4,9 +4,9 @@ Features:
 - Dual-script BM25 tokenization with site-aware query boosting and balanced top-6 retrieval
 - Graceful response when no context matches (zero model calls with empty context)
 - OpenRouter multi-model fallback on 404, 429, and 5xx errors
-- Strict header formatting and quote/whitespace stripping for OPENROUTER_API_KEY
+- Robust key cleaner: strips quotes, whitespace, newlines, and accidental 'Bearer ' or 'Authorization:' prefixes
 - follow_redirects disabled to prevent stripping of Authorization header
-- /health reporting chunks per site, models, key status, key length, and key prefix
+- /health reporting chunks per site, models, key status, key length, and key prefix (never the full key)
 - /reload protected by ADMIN_TOKEN
 - Background scraper launch if docs.jsonl has fewer than 100 chunks
 """
@@ -46,13 +46,25 @@ CHUNKS_PER_SITE: dict[str, int] = {"DarGlobal": 0, "Wasalt": 0}
 LOCK = threading.Lock()
 
 def get_openrouter_api_key() -> str:
-    """Read OPENROUTER_API_KEY dynamically, stripping whitespace, newlines, and quotes."""
+    """Read OPENROUTER_API_KEY dynamically, stripping whitespace, quotes, and accidental prefixes."""
     raw = os.getenv("OPENROUTER_API_KEY", "")
     if not raw:
         return ""
     cleaned = raw.strip()
     while (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
         cleaned = cleaned[1:-1].strip()
+
+    # Strip accidental prefixes if user entered 'Bearer ...' or 'Authorization: ...'
+    if cleaned.lower().startswith("authorization:"):
+        cleaned = cleaned[14:].strip()
+    if cleaned.lower().startswith("bearer:"):
+        cleaned = cleaned[7:].strip()
+    if cleaned.lower().startswith("bearer "):
+        cleaned = cleaned[7:].strip()
+
+    while (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+
     return cleaned
 
 def tok(s: str) -> list[str]:
@@ -326,7 +338,7 @@ async def chat(r: Req):
                     print(f"[Model Fallback] {model} returned {status}, trying next model...")
                     continue
                 else:
-                    # Non-retriable error (e.g., 400, 401, 403) - stop and return error
+                    # Non-retriable error (e.g. 400, 401, 403) - stop and report
                     break
             except Exception as e:
                 last_error = f"{model}: {e}"
