@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 # Copy all project files (including data/seed.jsonl and pre-seeded docs)
 COPY . .
 
-# Run scrape at build time (if network permits, updates docs.jsonl; fallback handles restrictions)
-RUN python -m scraper.scrape || echo "Build-time scrape completed with warnings/fallback; background scraper will verify at startup."
+# Run scrape at build time with a quick page limit so build finishes in under 2 minutes
+RUN MAX_PAGES_PER_SITE=25 python -m scraper.scrape || echo "Build-time scrape completed with warnings/fallback; background scraper will verify at startup."
 
 EXPOSE 8000
 
