@@ -1,34 +1,121 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DarGlobal and Wasalt Assistant</title>
+<title>DarGlobal & Wasalt Real Estate Assistant</title>
 <style>
-:root{--bg:#f6f7f5;--ink:#1d2623;--mut:#5d6b66;--line:#d7ddd9;--me:#1f4d43;--bot:#fff;color-scheme:light}
-@media(prefers-color-scheme:dark){:root{--bg:#141a18;--ink:#e6ece9;--mut:#93a39c;--line:#2a3532;--me:#2f7a69;--bot:#1c2421;color-scheme:dark}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 Georgia,serif;display:flex;flex-direction:column;height:100dvh}
-header{padding:16px 20px;border-bottom:1px solid var(--line)}
-h1{font-size:1.1rem;margin:0}header p{margin:2px 0 0;color:var(--mut);font:.85rem system-ui,sans-serif}
-#log{flex:1;overflow:auto;padding:20px;max-width:760px;width:100%;margin:0 auto}
-.m{margin:0 0 14px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;max-width:85%}
-.u{background:var(--me);color:#fff;border-color:var(--me);margin-left:auto}.b{background:var(--bot)}
-.s{display:block;margin-top:8px;font:.78rem system-ui,sans-serif;color:var(--mut);word-break:break-all}
-form{display:flex;gap:8px;padding:12px 20px;border-top:1px solid var(--line);max-width:760px;width:100%;margin:0 auto}
-input{flex:1;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bot);color:var(--ink);font:inherit}
-button{padding:0 18px;border:0;border-radius:8px;background:var(--me);color:#fff;font:600 .95rem system-ui,sans-serif;cursor:pointer}
-input:focus-visible,button:focus-visible{outline:2px solid var(--me);outline-offset:2px}
-</style></head><body>
-<header><h1>DarGlobal and Wasalt Assistant</h1><p>Answers come from public pages of both websites.</p></header>
-<div id="log"><div class="m b">Ask about DarGlobal projects, Wasalt listings, or either company.</div></div>
-<form id="f"><input id="q" placeholder="Ask a question" autocomplete="off" required><button>Send</button></form>
+:root{--bg:#f8faf9;--ink:#192420;--mut:#5e6e68;--line:#dce4e0;--me:#164e43;--bot:#ffffff;--pill-bg:#e8f1ee;--pill-ink:#164e43;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#121816;--ink:#e4eae7;--mut:#8fa19b;--line:#26322e;--me:#246d5f;--bot:#1a2320;--pill-bg:#1d2e29;--pill-ink:#a5d8cb;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;display:flex;flex-direction:column;height:100dvh}
+header{padding:14px 20px;border-bottom:1px solid var(--line);background:var(--bot)}
+header h1{font-size:1.15rem;margin:0;font-weight:700;display:flex;align-items:center;gap:8px}
+header p{margin:2px 0 0;color:var(--mut);font-size:.85rem}
+#log{flex:1;overflow-y:auto;padding:20px;max-width:800px;width:100%;margin:0 auto}
+.m{margin:0 0 16px;padding:12px 16px;border:1px solid var(--line);border-radius:10px;max-width:90%;line-height:1.6}
+.u{background:var(--me);color:#fff;border-color:var(--me);margin-left:auto;white-space:pre-wrap}
+.b{background:var(--bot);box-shadow:0 1px 3px rgba(0,0,0,0.04)}
+.b p{margin:0 0 8px}.b p:last-child{margin-bottom:0}
+.b h3{font-size:1.05rem;margin:6px 0 8px;color:var(--ink)}
+.b h4{font-size:.95rem;margin:6px 0 6px;color:var(--ink)}
+.b strong{font-weight:600}
+.s{display:block;margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);font-size:.78rem;color:var(--mut);word-break:break-all}
+.s a{color:inherit;text-decoration:underline}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.pill{background:var(--pill-bg);color:var(--pill-ink);border:1px solid transparent;border-radius:20px;padding:6px 12px;font-size:.82rem;font-weight:500;cursor:pointer;transition:all .15s ease}
+.pill:hover{background:var(--me);color:#fff}
+form{display:flex;gap:8px;padding:14px 20px;border-top:1px solid var(--line);background:var(--bot);max-width:800px;width:100%;margin:0 auto}
+input{flex:1;padding:11px 14px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;outline:none}
+input:focus{border-color:var(--me);box-shadow:0 0 0 2px rgba(22,78,67,0.15)}
+button{padding:0 22px;border:0;border-radius:8px;background:var(--me);color:#fff;font:600 .92rem inherit;cursor:pointer;transition:opacity .15s}
+button:hover{opacity:.92}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏢 DarGlobal & Wasalt Real Estate Assistant</h1>
+  <p>Live verified real estate intelligence across UAE, Saudi Arabia, Oman, Qatar, Spain & UK.</p>
+</header>
+
+<div id="log">
+  <div class="m b">
+    <p>Welcome! Ask me anything about <strong>DarGlobal luxury developments</strong> or <strong>Wasalt property listings in Saudi Arabia</strong>.</p>
+    <div class="pills">
+      <button type="button" class="pill" onclick="ask(this.textContent)">Ask about DarGlobal projects</button>
+      <button type="button" class="pill" onclick="ask(this.textContent)">Ask about Wasalt listings</button>
+      <button type="button" class="pill" onclick="ask(this.textContent)">Ask about either company</button>
+    </div>
+  </div>
+</div>
+
+<form id="f">
+  <input id="q" placeholder="Type your question about DarGlobal, Wasalt, or listings..." autocomplete="off" required>
+  <button type="submit">Send</button>
+</form>
+
 <script>
-const log=document.getElementById('log'),q=document.getElementById('q');let hist=[];
-function add(t,c,src){const d=document.createElement('div');d.className='m '+c;d.textContent=t;
- if(src&&src.length){const s=document.createElement('span');s.className='s';s.textContent='Sources: '+src.slice(0,4).join(', ');d.appendChild(s)}
- log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
-document.getElementById('f').onsubmit=async e=>{e.preventDefault();const m=q.value.trim();if(!m)return;q.value='';
- add(m,'u');const w=add('Thinking...','b');
- try{const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:m,history:hist})});
-  const j=await r.json();if(!r.ok)throw new Error(j.detail||r.status);
-  w.remove();add(j.answer,'b',j.sources);hist.push({role:'user',content:m},{role:'assistant',content:j.answer})}
- catch(x){w.textContent='Error: '+x.message}};
-</script></body></html>
+const log = document.getElementById('log'), q = document.getElementById('q');
+let hist = [];
+
+function formatMarkdown(text) {
+  let html = text
+    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+    .replace(/^#### (.*$)/gim, '<h4>$1</h4>')
+    .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n• /g, '<br>• ')
+    .replace(/\n/g, '<br>');
+  return '<p>' + html + '</p>';
+}
+
+function addMessage(content, isUser, sources) {
+  const div = document.createElement('div');
+  div.className = 'm ' + (isUser ? 'u' : 'b');
+  if (isUser) {
+    div.textContent = content;
+  } else {
+    div.innerHTML = formatMarkdown(content);
+    if (sources && sources.length) {
+      const s = document.createElement('span');
+      s.className = 's';
+      s.innerHTML = '<strong>Verified Sources:</strong> ' + sources.slice(0, 4).map(u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`).join(', ');
+      div.appendChild(s);
+    }
+  }
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+function ask(text) {
+  q.value = text;
+  document.getElementById('f').dispatchEvent(new Event('submit'));
+}
+
+document.getElementById('f').onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = q.value.trim();
+  if (!msg) return;
+  q.value = '';
+
+  addMessage(msg, true);
+  const loading = addMessage('Searching verified real estate database...', false);
+
+  try {
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: msg, history: hist})
+    });
+    const data = await res.json();
+    loading.remove();
+    addMessage(data.answer || 'No response available.', false, data.sources);
+    hist.push({role: 'user', content: msg}, {role: 'assistant', content: data.answer});
+  } catch (err) {
+    loading.remove();
+    addMessage('Unable to complete request. Please try again.', false);
+  }
+};
+</script>
+</body>
+</html>
